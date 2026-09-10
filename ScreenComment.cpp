@@ -58,17 +58,17 @@ void CaptureScreen(HWND hwnd)
             bitmap
         );
 
-    BitBlt(
-        memDC,
-        0,
-        0,
-        screenW,
-        screenH,
-        screenDC,
-        0,
-        0,
-        SRCCOPY
-    );
+BitBlt(
+    dc,
+    0,
+    0,
+    rc.right,
+    rc.bottom,
+    memDC,
+    0,
+    0,
+    SRCCOPY
+);
 
     SelectObject(
         memDC,
