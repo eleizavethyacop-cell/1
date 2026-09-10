@@ -14,7 +14,7 @@ jobs:
         shell: cmd
         run: |
           call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          cl /nologo /O2 /EHsc /DUNICODE /D_UNICODE /DWIN32 /D_WINDOWS /SUBSYSTEM:WINDOWS ScreenComment.cpp user32.lib gdi32.lib /Fe:ScreenComment.exe
+          cl /nologo /O2 /EHsc ScreenComment.cpp user32.lib gdi32.lib /Fe:ScreenComment.exe /link /SUBSYSTEM:WINDOWS
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
