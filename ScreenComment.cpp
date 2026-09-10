@@ -5,165 +5,233 @@
 #include <windows.h>
 #include <vector>
 #include <string>
-#include <random>
-#include <algorithm>
 
-struct Comment
-{
+struct Comment {
     std::wstring text;
-    float x;
-    float y;
-    float speed;
+    int x;
+    int y;
+    int width;
 };
 
-HBITMAP bg = nullptr;
-HDC bgdc = nullptr;
+HWND g_hWnd = nullptr;
+HWND g_edit = nullptr;
+HWND g_button = nullptr;
 
-HWND editBox = nullptr;
-HWND sendBtn = nullptr;
+HBITMAP g_background = nullptr;
+std::vector<Comment> g_comments;
 
-HFONT commentFont = nullptr;
+WNDPROC g_oldEditProc = nullptr;
 
-std::vector<Comment> comments;
+const int INPUT_HEIGHT = 55;
+const int COMMENT_SPEED = 2;
 
-std::mt19937 rng((unsigned)GetTickCount());
-
-WNDPROC oldEditProc = nullptr;
-
-
-// ========================================
-// 현재 화면 캡처
-// ========================================
-void CaptureScreen()
+void CaptureScreen(HWND hwnd)
 {
-    int width = GetSystemMetrics(SM_CXSCREEN);
-    int height = GetSystemMetrics(SM_CYSCREEN);
-
     HDC screenDC = GetDC(nullptr);
+    HDC memDC = CreateCompatibleDC(screenDC);
 
-    bgdc = CreateCompatibleDC(screenDC);
-    bg = CreateCompatibleBitmap(
-        screenDC,
-        width,
-        height
-    );
+    int screenW = GetSystemMetrics(SM_CXSCREEN);
+    int screenH = GetSystemMetrics(SM_CYSCREEN);
 
-    HGDIOBJ oldBitmap = SelectObject(
-        bgdc,
-        bg
-    );
+    HBITMAP bitmap = CreateCompatibleBitmap(screenDC, screenW, screenH);
+
+    HBITMAP oldBitmap =
+        (HBITMAP)SelectObject(memDC, bitmap);
 
     BitBlt(
-        bgdc,
+        memDC,
         0,
         0,
-        width,
-        height,
+        screenW,
+        screenH,
         screenDC,
         0,
         0,
         SRCCOPY
     );
 
-    SelectObject(
-        bgdc,
-        oldBitmap
-    );
+    SelectObject(memDC, oldBitmap);
+    DeleteDC(memDC);
+    ReleaseDC(nullptr, screenDC);
 
-    ReleaseDC(
-        nullptr,
-        screenDC
-    );
+    if (g_background)
+        DeleteObject(g_background);
+
+    g_background = bitmap;
 }
 
-
-// ========================================
-// 댓글 추가
-// ========================================
-void AddComment(HWND hwnd)
+void AddComment(HWND parent)
 {
-    int length = GetWindowTextLengthW(editBox);
+    if (!g_edit)
+        return;
+
+    int length = GetWindowTextLengthW(g_edit);
 
     if (length <= 0)
         return;
 
-    // 문자열 저장 공간 확보
-    std::vector<wchar_t> buffer(
-        length + 1
-    );
+    std::vector<wchar_t> buffer((size_t)length + 1);
 
     GetWindowTextW(
-        editBox,
+        g_edit,
         buffer.data(),
         length + 1
     );
 
-    std::wstring text(
-        buffer.data()
-    );
+    std::wstring text(buffer.data());
 
     if (text.empty())
         return;
 
-    RECT rect;
+    HDC dc = GetDC(parent);
 
-    GetClientRect(
-        hwnd,
-        &rect
+    SIZE size{};
+    GetTextExtentPoint32W(
+        dc,
+        text.c_str(),
+        (int)text.length(),
+        &size
     );
 
-    int maxX = (std::max)(
-        20,
-        rect.right - 400
-    );
+    ReleaseDC(parent, dc);
 
-    std::uniform_real_distribution<float> xDist(
-        20.0f,
-        (float)maxX
-    );
-
-    std::uniform_real_distribution<float> speedDist(
-        1.3f,
-        2.8f
-    );
+    RECT rc{};
+    GetClientRect(parent, &rc);
 
     Comment comment;
 
     comment.text = text;
 
-    comment.x = xDist(rng);
+    // 댓글이 화면 오른쪽에서 시작하도록 함
+    comment.x = rc.right + 20;
 
-    comment.y =
-        (float)rect.bottom - 110.0f;
+    // 입력창 바로 위에서 시작
+    comment.y = rc.bottom - INPUT_HEIGHT - 45;
 
-    comment.speed =
-        speedDist(rng);
+    comment.width = size.cx + 30;
 
-    comments.push_back(
-        comment
-    );
+    g_comments.push_back(comment);
 
-    // 입력창 비우기
-    SetWindowTextW(
-        editBox,
-        L""
-    );
+    SetWindowTextW(g_edit, L"");
 
-    SetFocus(
-        editBox
-    );
-
-    InvalidateRect(
-        hwnd,
-        nullptr,
-        FALSE
-    );
+    InvalidateRect(parent, nullptr, FALSE);
 }
 
+void DrawBackground(HDC dc, RECT& rc)
+{
+    if (!g_background)
+        return;
 
-// ========================================
-// 입력창 Enter 키 처리
-// ========================================
+    HDC memDC = CreateCompatibleDC(dc);
+
+    HBITMAP oldBitmap =
+        (HBITMAP)SelectObject(memDC, g_background);
+
+    int width = GetSystemMetrics(SM_CXSCREEN);
+    int height = GetSystemMetrics(SM_CYSCREEN);
+
+    BitBlt(
+        dc,
+        0,
+        0,
+        rc.right,
+        rc.bottom,
+        memDC,
+        0,
+        0,
+        SRCCOPY
+    );
+
+    SelectObject(memDC, oldBitmap);
+    DeleteDC(memDC);
+}
+
+void DrawComments(HDC dc, RECT& rc)
+{
+    SetBkMode(dc, TRANSPARENT);
+
+    HFONT font = CreateFontW(
+        30,
+        0,
+        0,
+        0,
+        FW_BOLD,
+        FALSE,
+        FALSE,
+        FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        ANTIALIASED_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE,
+        L"맑은 고딕"
+    );
+
+    HFONT oldFont =
+        (HFONT)SelectObject(dc, font);
+
+    // 댓글 외곽선 효과
+    for (const auto& comment : g_comments)
+    {
+        int x = comment.x;
+        int y = comment.y;
+
+        SetTextColor(dc, RGB(0, 0, 0));
+
+        for (int dx = -2; dx <= 2; dx++)
+        {
+            for (int dy = -2; dy <= 2; dy++)
+            {
+                TextOutW(
+                    dc,
+                    x + dx,
+                    y + dy,
+                    comment.text.c_str(),
+                    (int)comment.text.length()
+                );
+            }
+        }
+
+        SetTextColor(dc, RGB(255, 255, 255));
+
+        TextOutW(
+            dc,
+            x,
+            y,
+            comment.text.c_str(),
+            (int)comment.text.length()
+        );
+    }
+
+    SelectObject(dc, oldFont);
+    DeleteObject(font);
+}
+
+void UpdateComments(HWND hwnd)
+{
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+
+    for (auto& comment : g_comments)
+    {
+        comment.x -= COMMENT_SPEED;
+    }
+
+    std::vector<Comment> alive;
+
+    for (auto& comment : g_comments)
+    {
+        if (comment.x + comment.width > 0)
+        {
+            alive.push_back(comment);
+        }
+    }
+
+    g_comments.swap(alive);
+
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
 LRESULT CALLBACK EditProc(
     HWND hwnd,
     UINT message,
@@ -171,24 +239,33 @@ LRESULT CALLBACK EditProc(
     LPARAM lParam
 )
 {
-    if (
-        message == WM_KEYDOWN &&
-        wParam == VK_RETURN
-    )
+    if (message == WM_KEYDOWN)
     {
-        HWND parent =
-            GetParent(hwnd);
-
-        if (parent)
+        // Enter = 댓글 등록
+        if (wParam == VK_RETURN)
         {
-            AddComment(parent);
+            HWND parent = GetParent(hwnd);
+
+            if (parent)
+                AddComment(parent);
+
+            return 0;
         }
 
-        return 0;
+        // ESC = 프로그램 종료
+        if (wParam == VK_ESCAPE)
+        {
+            HWND parent = GetParent(hwnd);
+
+            if (parent)
+                DestroyWindow(parent);
+
+            return 0;
+        }
     }
 
     return CallWindowProcW(
-        oldEditProc,
+        g_oldEditProc,
         hwnd,
         message,
         wParam,
@@ -196,11 +273,7 @@ LRESULT CALLBACK EditProc(
     );
 }
 
-
-// ========================================
-// 메인 윈도우
-// ========================================
-LRESULT CALLBACK WindowProc(
+LRESULT CALLBACK WndProc(
     HWND hwnd,
     UINT message,
     WPARAM wParam,
@@ -209,435 +282,174 @@ LRESULT CALLBACK WindowProc(
 {
     switch (message)
     {
-    // ------------------------------------
-    // 시작
-    // ------------------------------------
     case WM_CREATE:
     {
-        // 프로그램이 시작되는 순간
-        // 현재 화면을 캡처
-        CaptureScreen();
+        // 프로그램이 뜨기 전에 현재 화면을 캡처
+        CaptureScreen(hwnd);
 
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
 
-        // 댓글 글꼴
-        commentFont = CreateFontW(
-            30,
-            0,
-            0,
-            0,
-            FW_BOLD,
-            FALSE,
-            FALSE,
-            FALSE,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY,
-            DEFAULT_PITCH,
-            L"Malgun Gothic"
-        );
+        int width = rc.right;
+        int height = rc.bottom;
 
-
-        // 입력창
-        editBox = CreateWindowW(
+        g_edit = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
             L"EDIT",
             L"",
             WS_CHILD |
             WS_VISIBLE |
-            WS_BORDER |
             ES_AUTOHSCROLL,
-            20,
-            20,
-            500,
-            45,
+            10,
+            height - INPUT_HEIGHT + 8,
+            width - 110,
+            INPUT_HEIGHT - 16,
             hwnd,
-            (HMENU)1,
             nullptr,
+            GetModuleHandleW(nullptr),
             nullptr
         );
 
-
-        // 전송 버튼
-        sendBtn = CreateWindowW(
+        g_button = CreateWindowW(
             L"BUTTON",
-            L"전송",
+            L"보내기",
             WS_CHILD |
-            WS_VISIBLE,
-            530,
-            20,
+            WS_VISIBLE |
+            BS_PUSHBUTTON,
+            width - 90,
+            height - INPUT_HEIGHT + 8,
             80,
-            45,
+            INPUT_HEIGHT - 16,
             hwnd,
-            (HMENU)2,
-            nullptr,
+            (HMENU)1001,
+            GetModuleHandleW(nullptr),
             nullptr
         );
 
-
-        // Enter 키를 전송으로 사용
-        oldEditProc =
+        g_oldEditProc =
             (WNDPROC)SetWindowLongPtrW(
-                editBox,
+                g_edit,
                 GWLP_WNDPROC,
                 (LONG_PTR)EditProc
             );
 
-
-        // 약 60 FPS
-        SetTimer(
-            hwnd,
-            1,
-            16,
-            nullptr
-        );
-
-
-        SetFocus(
-            editBox
-        );
+        SetTimer(hwnd, 1, 16, nullptr);
 
         return 0;
     }
 
-
-    // ------------------------------------
-    // 창 크기 변경
-    // ------------------------------------
     case WM_SIZE:
     {
-        int width =
-            LOWORD(lParam);
+        if (g_edit && g_button)
+        {
+            int width = LOWORD(lParam);
+            int height = HIWORD(lParam);
 
-        int height =
-            HIWORD(lParam);
+            MoveWindow(
+                g_edit,
+                10,
+                height - INPUT_HEIGHT + 8,
+                width - 110,
+                INPUT_HEIGHT - 16,
+                TRUE
+            );
 
-
-        MoveWindow(
-            editBox,
-            20,
-            height - 60,
-            (std::max)(
-                100,
-                width - 130
-            ),
-            45,
-            TRUE
-        );
-
-
-        MoveWindow(
-            sendBtn,
-            width - 100,
-            height - 60,
-            80,
-            45,
-            TRUE
-        );
+            MoveWindow(
+                g_button,
+                width - 90,
+                height - INPUT_HEIGHT + 8,
+                80,
+                INPUT_HEIGHT - 16,
+                TRUE
+            );
+        }
 
         return 0;
     }
 
-
-    // ------------------------------------
-    // 버튼 클릭
-    // ------------------------------------
     case WM_COMMAND:
     {
-        if (
-            LOWORD(wParam) == 2 &&
-            HIWORD(wParam) == BN_CLICKED
-        )
+        if (LOWORD(wParam) == 1001)
         {
             AddComment(hwnd);
-        }
-
-        return 0;
-    }
-
-
-    // ------------------------------------
-    // 댓글 이동
-    // ------------------------------------
-    case WM_TIMER:
-    {
-        for (
-            auto& comment : comments
-        )
-        {
-            comment.y -=
-                comment.speed;
-        }
-
-
-        // 화면 위로 완전히 사라진 댓글 삭제
-        comments.erase(
-            std::remove_if(
-                comments.begin(),
-                comments.end(),
-                [](const Comment& c)
-                {
-                    return c.y < -70.0f;
-                }
-            ),
-            comments.end()
-        );
-
-
-        InvalidateRect(
-            hwnd,
-            nullptr,
-            FALSE
-        );
-
-        return 0;
-    }
-
-
-    // ------------------------------------
-    // 화면 그리기
-    // ------------------------------------
-    case WM_PAINT:
-    {
-        PAINTSTRUCT ps;
-
-        HDC dc =
-            BeginPaint(
-                hwnd,
-                &ps
-            );
-
-
-        RECT rect;
-
-        GetClientRect(
-            hwnd,
-            &rect
-        );
-
-
-        // 캡처한 화면을 배경으로 표시
-        BitBlt(
-            dc,
-            0,
-            0,
-            rect.right,
-            rect.bottom,
-            bgdc,
-            0,
-            0,
-            SRCCOPY
-        );
-
-
-        // 댓글 글꼴
-        HGDIOBJ oldFont =
-            SelectObject(
-                dc,
-                commentFont
-            );
-
-
-        SetBkMode(
-            dc,
-            TRANSPARENT
-        );
-
-
-        // --------------------------------
-        // 댓글 표시
-        // --------------------------------
-        for (
-            auto& comment : comments
-        )
-        {
-            int x =
-                (int)comment.x;
-
-            int y =
-                (int)comment.y;
-
-
-            // 검은색 그림자
-            RECT shadowRect =
-            {
-                x + 3,
-                y + 3,
-                rect.right,
-                y + 60
-            };
-
-
-            SetTextColor(
-                dc,
-                RGB(
-                    0,
-                    0,
-                    0
-                )
-            );
-
-
-            DrawTextW(
-                dc,
-                comment.text.c_str(),
-                -1,
-                &shadowRect,
-                DT_LEFT |
-                DT_SINGLELINE |
-                DT_NOPREFIX
-            );
-
-
-            // 흰색 글자
-            RECT textRect =
-            {
-                x,
-                y,
-                rect.right,
-                y + 60
-            };
-
-
-            SetTextColor(
-                dc,
-                RGB(
-                    255,
-                    255,
-                    255
-                )
-            );
-
-
-            DrawTextW(
-                dc,
-                comment.text.c_str(),
-                -1,
-                &textRect,
-                DT_LEFT |
-                DT_SINGLELINE |
-                DT_NOPREFIX
-            );
-        }
-
-
-        SelectObject(
-            dc,
-            oldFont
-        );
-
-
-        // --------------------------------
-        // 아래 입력창 영역
-        // --------------------------------
-        HBRUSH brush =
-            CreateSolidBrush(
-                RGB(
-                    20,
-                    20,
-                    20
-                )
-            );
-
-
-        RECT bottomBar =
-        {
-            0,
-            rect.bottom - 70,
-            rect.right,
-            rect.bottom
-        };
-
-
-        FillRect(
-            dc,
-            &bottomBar,
-            brush
-        );
-
-
-        DeleteObject(
-            brush
-        );
-
-
-        EndPaint(
-            hwnd,
-            &ps
-        );
-
-        return 0;
-    }
-
-
-    // ------------------------------------
-    // ESC = 종료
-    // ------------------------------------
-    case WM_KEYDOWN:
-    {
-        if (
-            wParam == VK_ESCAPE
-        )
-        {
-            DestroyWindow(
-                hwnd
-            );
-
             return 0;
         }
 
+        break;
+    }
+
+    case WM_KEYDOWN:
+    {
+        if (wParam == VK_ESCAPE)
+        {
+            DestroyWindow(hwnd);
+            return 0;
+        }
+
+        break;
+    }
+
+    case WM_TIMER:
+    {
+        if (wParam == 1)
+        {
+            UpdateComments(hwnd);
+            return 0;
+        }
+
+        break;
+    }
+
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps{};
+
+        HDC dc = BeginPaint(hwnd, &ps);
+
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
+
+        // 캡처한 화면 표시
+        DrawBackground(dc, rc);
+
+        // 댓글 표시
+        DrawComments(dc, rc);
+
+        // 입력창 부분을 살짝 어둡게
+        HBRUSH brush =
+            CreateSolidBrush(RGB(0, 0, 0));
+
+        RECT inputArea{
+            0,
+            rc.bottom - INPUT_HEIGHT,
+            rc.right,
+            rc.bottom
+        };
+
+        FillRect(dc, &inputArea, brush);
+
+        DeleteObject(brush);
+
+        EndPaint(hwnd, &ps);
+
         return 0;
     }
 
-
-    // ------------------------------------
-    // 종료
-    // ------------------------------------
     case WM_DESTROY:
     {
-        KillTimer(
-            hwnd,
-            1
-        );
+        KillTimer(hwnd, 1);
 
-
-        if (commentFont)
+        if (g_background)
         {
-            DeleteObject(
-                commentFont
-            );
-
-            commentFont = nullptr;
+            DeleteObject(g_background);
+            g_background = nullptr;
         }
 
-
-        if (bgdc)
-        {
-            DeleteDC(
-                bgdc
-            );
-
-            bgdc = nullptr;
-        }
-
-
-        if (bg)
-        {
-            DeleteObject(
-                bg
-            );
-
-            bg = nullptr;
-        }
-
-
-        PostQuitMessage(
-            0
-        );
+        PostQuitMessage(0);
 
         return 0;
     }
     }
-
 
     return DefWindowProcW(
         hwnd,
@@ -647,105 +459,73 @@ LRESULT CALLBACK WindowProc(
     );
 }
 
-
-// ========================================
-// 프로그램 시작
-// ========================================
-int WINAPI wWinMain(
+int WINAPI WinMain(
     HINSTANCE hInstance,
     HINSTANCE,
-    PWSTR,
+    LPSTR,
     int
 )
 {
+    const wchar_t CLASS_NAME[] =
+        L"ScreenCommentWindow";
+
     WNDCLASSW wc{};
 
-    wc.lpfnWndProc =
-        WindowProc;
-
-    wc.hInstance =
-        hInstance;
-
-    wc.lpszClassName =
-        L"ScreenComment";
-
-    wc.hCursor =
-        LoadCursor(
-            nullptr,
-            IDC_ARROW
-        );
-
-
-    RegisterClassW(
-        &wc
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInstance;
+    wc.lpszClassName = CLASS_NAME;
+    wc.hCursor = LoadCursorW(
+        nullptr,
+        IDC_ARROW
     );
 
+    RegisterClassW(&wc);
 
-    int screenWidth =
-        GetSystemMetrics(
-            SM_CXSCREEN
-        );
+    int screenW =
+        GetSystemMetrics(SM_CXSCREEN);
 
-    int screenHeight =
-        GetSystemMetrics(
-            SM_CYSCREEN
-        );
+    int screenH =
+        GetSystemMetrics(SM_CYSCREEN);
 
+    g_hWnd = CreateWindowExW(
+        WS_EX_TOPMOST,
+        CLASS_NAME,
+        L"Screen Comment",
+        WS_POPUP,
+        0,
+        0,
+        screenW,
+        screenH,
+        nullptr,
+        nullptr,
+        hInstance,
+        nullptr
+    );
 
-    // 전체 화면
-    HWND hwnd =
-        CreateWindowExW(
-            WS_EX_TOPMOST,
-            L"ScreenComment",
-            L"ScreenComment",
-            WS_POPUP,
-            0,
-            0,
-            screenWidth,
-            screenHeight,
-            nullptr,
-            nullptr,
-            hInstance,
-            nullptr
-        );
-
-
-    if (!hwnd)
-        return 1;
-
+    if (!g_hWnd)
+        return 0;
 
     ShowWindow(
-        hwnd,
+        g_hWnd,
         SW_SHOW
     );
 
+    UpdateWindow(g_hWnd);
 
-    UpdateWindow(
-        hwnd
-    );
-
+    SetForegroundWindow(g_hWnd);
 
     MSG msg{};
 
-
-    while (
-        GetMessageW(
-            &msg,
-            nullptr,
-            0,
-            0
-        )
-    )
+    while (GetMessageW(
+        &msg,
+        nullptr,
+        0,
+        0
+    ))
     {
-        TranslateMessage(
-            &msg
-        );
-
-        DispatchMessageW(
-            &msg
-        );
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
     }
 
-
-    return 0;
+    return (int)msg.wParam;
 }
